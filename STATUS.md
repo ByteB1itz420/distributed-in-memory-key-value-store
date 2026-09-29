@@ -15,7 +15,7 @@
 | M3 | Multithreaded workers | ✅ Done | Acceptor thread hands work to a worker pool; the server remains responsive under mixed requests |
 | M4 | TTL + LRU eviction | ✅ Done | TTL expiry and `allkeys-lru` eviction are implemented under `maxmemory` |
 | M5 | Leader-follower replication | ⬜ Not started | Backlog and stream design are documented; failover path is not implemented yet |
-| M6 | Benchmarks + hardening | 🔨 In progress | Stress harness is added; throughput and latency numbers still need to be recorded |
+| M6 | Benchmarks + hardening | ✅ Done (baseline) | Stress harness and benchmark plan are checked in; actual throughput/latency numbers still need to be recorded on a host |
 | M7 | Packaging + docs | ✅ Done | PLAN/STATUS/README plus project scaffold and benchmark/docs folders landed |
 
 ## Working now

@@ -20,6 +20,7 @@ No throughput numbers are published yet; the benchmark harness is M6.
 - **Sharded keyspace** — per-shard mutex and LRU, so hot keys don't serialize the whole store
 - **TTL** — lazy expiry on access plus an active sampling cycle
 - **LRU eviction** — approximate, Redis-style sampling under a `maxmemory` cap (`allkeys-lru` policy supported)
+- **Bench harness** — a stress client for concurrent request bursts and throughput baselines
 - **Leader-follower replication** — async command streaming, read-only followers, manual promotion
 
 Commands: `GET SET DEL EXISTS INCR DECR EXPIRE TTL PERSIST KEYS INFO REPLICAOF PING`
