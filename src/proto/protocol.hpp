@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -13,6 +14,9 @@ struct Request {
 
 class FrameCodec {
 public:
+    static constexpr std::size_t max_request_bytes = 16 * 1024 * 1024;
+    static constexpr std::size_t max_arguments = 64;
+
     static std::optional<Request> decode_one(const std::vector<std::uint8_t>& buffer, std::size_t& offset);
     static std::vector<std::uint8_t> encode_request(const std::vector<std::string>& argv);
     static std::vector<std::uint8_t> encode_response_ok();

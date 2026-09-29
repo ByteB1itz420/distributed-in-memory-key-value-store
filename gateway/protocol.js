@@ -26,16 +26,36 @@ export function decodeResponse(frame) {
     throw new Error("invalid response frame length");
   }
   const type = frame[4];
-  const payload = frame.subarray(5).toString("utf8");
-  if (type === 0) return null;
+  const payloadBuffer = frame.subarray(5);
+  const payload = payloadBuffer.toString("utf8");
+  if (type === 0) {
+    if (payloadBuffer.length !== 0) throw new Error("invalid nil response");
+    return null;
+  }
   if (type === 1) throw new Error(payload || "key-value server error");
   if (type === 2) return payload;
   if (type === 3) {
+    if (!/^-?\d+$/.test(payload)) throw new Error("invalid integer response");
     const value = Number(payload);
     if (!Number.isSafeInteger(value)) throw new Error("invalid integer response");
     return value;
   }
-  if (type === 4) return payload.length === 0 ? [] : payload.split("\n");
+  if (type === 4) {
+    if (payloadBuffer.length < 4) throw new Error("invalid response array");
+    const count = payloadBuffer.readUInt32LE(0);
+    const values = [];
+    let offset = 4;
+    for (let i = 0; i < count; i += 1) {
+      if (payloadBuffer.length - offset < 4) throw new Error("invalid response array");
+      const length = payloadBuffer.readUInt32LE(offset);
+      offset += 4;
+      if (payloadBuffer.length - offset < length) throw new Error("invalid response array");
+      values.push(payloadBuffer.subarray(offset, offset + length).toString("utf8"));
+      offset += length;
+    }
+    if (offset !== payloadBuffer.length) throw new Error("invalid response array");
+    return values;
+  }
   throw new Error(`unknown response type: ${type}`);
 }
 

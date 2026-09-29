@@ -20,6 +20,7 @@ if (!process.env.DEMO_SECRET) {
   console.warn("DEMO_SECRET is unset; demo sessions will be invalidated when this process restarts");
 }
 const app = express();
+app.set("trust proxy", 1);
 
 const kvServer = process.env.START_KV_SERVER === "false"
   ? null
@@ -96,9 +97,10 @@ const demoSessionLimiter = rateLimit({
 app.post("/api/demo/session", demoSessionLimiter, async (_req, res) => {
   const id = randomUUID();
   const expiresAt = Math.floor(Date.now() / 1000) + demoSessionTtlSeconds;
+  const starterTtl = Math.floor((expiresAt * 1000 - Date.now()) / 1000);
   const prefix = `user:demo-${id}:`;
-  await sendCommand(["SET", `${prefix}welcome`, "Your demo is live. Edit or delete this key to try the store.", String(demoSessionTtlSeconds)]);
-  await sendCommand(["SET", `${prefix}sample:json`, "{\"project\":\"kv.store\",\"mode\":\"in-memory\"}", String(demoSessionTtlSeconds)]);
+  await sendCommand(["SET", `${prefix}welcome`, "Your demo is live. Edit or delete this key to try the store.", String(starterTtl)]);
+  await sendCommand(["SET", `${prefix}sample:json`, "{\"project\":\"kv.store\",\"mode\":\"in-memory\"}", String(starterTtl)]);
   res.status(201).json({
     accessToken: `${id}.${expiresAt}.${signDemoSession(id, expiresAt)}`,
     expiresAt,
@@ -123,6 +125,24 @@ app.use("/api", async (req, res, next) => {
 });
 
 const physicalKey = (userId, key) => `user:${userId}:${key}`;
+const sessionWriteQueues = new Map();
+
+async function withSessionWriteLock(sessionId, operation) {
+  const previous = sessionWriteQueues.get(sessionId) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  const queued = previous.then(() => current);
+  sessionWriteQueues.set(sessionId, queued);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (sessionWriteQueues.get(sessionId) === queued) {
+      sessionWriteQueues.delete(sessionId);
+    }
+  }
+}
 
 app.get("/api/demo/session", (req, res) => {
   res.json({ expiresAt: req.demoExpiresAt });
@@ -146,8 +166,8 @@ function validateValue(value) {
 
 app.get("/api/keys", async (req, res) => {
   const prefix = `user:${req.userId}:`;
-  const keys = await sendCommand(["KEYS"]);
-  res.json({ keys: keys.filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length)).sort() });
+  const keys = await sendCommand(["KEYS", prefix]);
+  res.json({ keys: keys.map((key) => key.slice(prefix.length)).sort() });
 });
 
 app.get("/api/keys/:key", async (req, res) => {
@@ -173,23 +193,28 @@ app.post("/api/keys", async (req, res) => {
     res.status(400).json({ error: "TTL must be blank or a whole number between 1 and 31,536,000 seconds" });
     return;
   }
-  const remainingTtl = req.demoExpiresAt - Math.floor(Date.now() / 1000);
-  if (remainingTtl < 1) {
+  const prefix = `user:${req.userId}:`;
+  const writeResult = await withSessionWriteLock(req.userId, async () => {
+    const remainingTtl = Math.floor((req.demoExpiresAt * 1000 - Date.now()) / 1000);
+    if (remainingTtl < 1) return "expired";
+    const existingKeys = await sendCommand(["KEYS", prefix]);
+    if (!existingKeys.includes(key) && existingKeys.length >= 50) {
+      return "limit";
+    }
+    const existingTtl = await sendCommand(["TTL", physicalKey(req.userId, key)]);
+    const requestedTtl = Number.isSafeInteger(ttlSeconds) ? ttlSeconds : existingTtl;
+    const effectiveTtl = requestedTtl > 0 ? Math.min(requestedTtl, remainingTtl) : remainingTtl;
+    await sendCommand(["SET", physicalKey(req.userId, key), value, String(effectiveTtl)]);
+    return "created";
+  });
+  if (writeResult === "expired") {
     res.status(401).json({ error: "Demo session expired; start a new demo session" });
     return;
   }
-  const prefix = `user:${req.userId}:`;
-  const existingKeys = await sendCommand(["KEYS"]);
-  if (!existingKeys.includes(`${prefix}${key}`) &&
-      existingKeys.filter((existingKey) => existingKey.startsWith(prefix)).length >= 50) {
+  if (writeResult === "limit") {
     res.status(429).json({ error: "This demo session is limited to 50 keys" });
     return;
   }
-  const existingTtl = await sendCommand(["TTL", physicalKey(req.userId, key)]);
-  const requestedTtl = Number.isSafeInteger(ttlSeconds) ? ttlSeconds : existingTtl;
-  const effectiveTtl = requestedTtl > 0 ? Math.min(requestedTtl, remainingTtl) : remainingTtl;
-  const args = ["SET", physicalKey(req.userId, key), value, String(effectiveTtl)];
-  await sendCommand(args);
   res.status(201).json({ key });
 });
 
@@ -207,9 +232,9 @@ app.post("/api/keys/:key/persist", async (req, res) => {
 
 app.get("/api/status", async (req, res) => {
   const prefix = `user:${req.userId}:`;
-  const keys = await sendCommand(["KEYS"]);
+  const keys = await sendCommand(["KEYS", prefix]);
   await sendCommand(["PING"]);
-  res.json({ status: "online", keyCount: keys.filter((key) => key.startsWith(prefix)).length });
+  res.json({ status: "online", keyCount: keys.length });
 });
 
 app.use((error, _req, res, _next) => {

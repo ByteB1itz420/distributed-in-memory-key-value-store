@@ -55,6 +55,7 @@ function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const startupPromise = useRef(null);
 
   useEffect(() => {
     if (!apiUrl) {
@@ -62,25 +63,29 @@ function App() {
       return;
     }
     let active = true;
-    (async () => {
-      let token = window.sessionStorage.getItem("kvstore-demo-token");
-      if (token) {
-        const response = await fetch(`${apiUrl}/api/demo/session`, {
+    if (!startupPromise.current) {
+      startupPromise.current = (async () => {
+        let token = window.sessionStorage.getItem("kvstore-demo-token");
+        if (token) {
+          const response = await fetch(`${apiUrl}/api/demo/session`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (response.status === 401) {
-          window.sessionStorage.removeItem("kvstore-demo-token");
-          token = null;
-        } else {
-          await responseJson(response);
+          if (response.status === 401) {
+            window.sessionStorage.removeItem("kvstore-demo-token");
+            token = null;
+          } else {
+            await responseJson(response);
+          }
         }
-      }
-      const demo = token ? { accessToken: token } : await createDemoSession();
+        return token ? { accessToken: token } : createDemoSession();
+      })();
+    }
+    startupPromise.current.then((demo) => {
       if (!active) return;
       window.sessionStorage.setItem("kvstore-demo-token", demo.accessToken);
       setSession({ access_token: demo.accessToken, user: { email: "Demo workspace" } });
       setError("");
-    })().catch((cause) => {
+    }).catch((cause) => {
       if (active) setError(cause.message);
     }).finally(() => {
       if (active) setLoading(false);
@@ -90,6 +95,7 @@ function App() {
 
   async function startNewDemo() {
     if (!apiUrl) return;
+    setSession(null);
     setLoading(true);
     setError("");
     try {
@@ -153,6 +159,9 @@ function Console({ session, onNewDemo }) {
   const [selectedKey, setSelectedKey] = useState("");
   const [selectedValue, setSelectedValue] = useState("");
   const [ttlInput, setTtlInput] = useState("");
+  const [loadingSelectedKey, setLoadingSelectedKey] = useState(false);
+  const [selectedKeyError, setSelectedKeyError] = useState("");
+  const [selectedLoadAttempt, setSelectedLoadAttempt] = useState(0);
   const [search, setSearch] = useState("");
   const [isNew, setIsNew] = useState(false);
   const [newKey, setNewKey] = useState("");
@@ -196,8 +205,14 @@ function Console({ session, onNewDemo }) {
   }, [loadKeys]);
 
   useEffect(() => {
-    if (!selectedKey || isNew) return;
+    if (!selectedKey || isNew) {
+      setLoadingSelectedKey(false);
+      setSelectedKeyError("");
+      return;
+    }
     let active = true;
+    setLoadingSelectedKey(true);
+    setSelectedKeyError("");
     getJson(`/keys/${encodeURIComponent(selectedKey)}`, accessToken)
       .then((record) => {
         if (active) {
@@ -206,10 +221,16 @@ function Console({ session, onNewDemo }) {
         }
       })
       .catch((cause) => {
-        if (active) setError(cause.message);
+        if (active) {
+          setSelectedKeyError(cause.message);
+          setError(cause.message);
+        }
+      })
+      .finally(() => {
+        if (active) setLoadingSelectedKey(false);
       });
     return () => { active = false; };
-  }, [accessToken, selectedKey, isNew]);
+  }, [accessToken, isNew, selectedKey, selectedLoadAttempt]);
 
   const visibleKeys = useMemo(() => keys.filter((key) => key.toLowerCase().includes(search.toLowerCase())), [keys, search]);
 
@@ -228,7 +249,10 @@ function Console({ session, onNewDemo }) {
     event.preventDefault();
     const key = isNew ? newKey.trim() : selectedKey;
     const ttlValue = isNew ? newTtl : ttlInput;
-    if (!key) return;
+    if (!key) {
+      setError("Key name cannot be blank.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -274,7 +298,21 @@ function Console({ session, onNewDemo }) {
     setNewKey("");
     setNewValue("");
     setNewTtl("");
+    setSelectedValue("");
+    setTtlInput("");
+    setLoadingSelectedKey(false);
+    setSelectedKeyError("");
     setError("");
+  }
+
+  function selectKey(key) {
+    setIsNew(false);
+    setSelectedValue("");
+    setTtlInput("");
+    setLoadingSelectedKey(true);
+    setSelectedKeyError("");
+    setSelectedKey(key);
+    setSelectedLoadAttempt((attempt) => attempt + 1);
   }
 
   useEffect(() => {
@@ -297,7 +335,7 @@ function Console({ session, onNewDemo }) {
           {loadingKeys && keys.length === 0 ? (
             <div className="list-loading"><LoaderCircle className="spin" size={16} /> Loading keys…</div>
           ) : visibleKeys.length ? visibleKeys.map((key) => (
-            <button key={key} className={`key-row ${selectedKey === key && !isNew ? "active" : ""}`} onClick={() => { setIsNew(false); setSelectedKey(key); }}>
+            <button key={key} className={`key-row ${selectedKey === key && !isNew ? "active" : ""}`} onClick={() => selectKey(key)}>
               <FileKey2 size={16} /><span>{key}</span><ChevronRight size={14} className="key-chevron" />
             </button>
           )) : (
@@ -315,7 +353,7 @@ function Console({ session, onNewDemo }) {
           <div className="breadcrumb"><span>Workspace</span><ChevronRight size={14} /><strong>Overview</strong></div>
           <div className="topbar-actions">
             <span className={`connection-badge ${status?.status === "online" ? "online" : "offline"}`}><span />{status?.status === "online" ? "Connected" : "Connecting"}</span>
-            <button className="icon-button refresh-button" onClick={loadKeys} aria-label="Refresh data"><RefreshCw size={16} /></button>
+            <button className="icon-button refresh-button" onClick={() => { loadKeys(); if (selectedKey) setSelectedLoadAttempt((attempt) => attempt + 1); }} aria-label="Refresh data"><RefreshCw size={16} /></button>
             <button className="button button-secondary new-demo-button" onClick={onNewDemo}><RotateCcw size={14} /> New demo</button>
             <button className="button button-primary new-button" onClick={startNew}><Plus size={16} /> New key</button>
           </div>
@@ -339,7 +377,7 @@ function Console({ session, onNewDemo }) {
               <div className="table-head"><span>KEY</span><span>TYPE</span><span>STATUS</span></div>
               <div className="table-body">
                 {visibleKeys.slice(0, 8).map((key) => (
-                  <button key={key} className={`table-row ${selectedKey === key && !isNew ? "selected" : ""}`} onClick={() => { setIsNew(false); setSelectedKey(key); }}>
+                  <button key={key} className={`table-row ${selectedKey === key && !isNew ? "selected" : ""}`} onClick={() => selectKey(key)}>
                     <span className="table-key"><span className="key-mini-icon"><KeyRound size={14} /></span><strong>{key}</strong></span><span className="type-label">String</span><span className="table-status"><span className="tiny-dot" />Active</span>
                   </button>
                 ))}
@@ -354,9 +392,9 @@ function Console({ session, onNewDemo }) {
               {hasSelection ? (
                 <form className="editor-form" onSubmit={saveKey}>
                   <label>KEY NAME<input value={isNew ? newKey : selectedKey} onChange={(e) => isNew && setNewKey(e.target.value)} readOnly={!isNew} placeholder="e.g. user:42:profile" autoFocus={isNew} required /></label>
-                  <label>VALUE<textarea value={isNew ? newValue : selectedValue} onChange={(e) => isNew ? setNewValue(e.target.value) : setSelectedValue(e.target.value)} placeholder="Enter a string value…" rows={7} /></label>
-                  <label>EXPIRES IN <span className="optional-label">OPTIONAL</span><div className="ttl-input"><input type="number" min="1" max="31536000" value={isNew ? newTtl : ttlInput} onChange={(e) => isNew ? setNewTtl(e.target.value) : setTtlInput(e.target.value)} placeholder="Never expire" /><span>seconds</span></div></label>
-                  <div className="editor-actions"><button type="submit" className="button button-primary save-button" disabled={busy}>{busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}{isNew ? "Create key" : "Save changes"}</button>{!isNew && <button type="button" className="button button-danger" onClick={deleteKey} disabled={busy}><Trash2 size={15} /> Delete</button>}<button type="button" className="button button-quiet" onClick={() => { setIsNew(false); setSelectedKey(""); }}>Cancel</button></div>
+                  <label>VALUE<textarea value={isNew ? newValue : selectedValue} onChange={(e) => isNew ? setNewValue(e.target.value) : setSelectedValue(e.target.value)} placeholder="Enter a string value…" rows={7} disabled={!isNew && (loadingSelectedKey || Boolean(selectedKeyError))} /></label>
+                  <label>EXPIRES IN <span className="optional-label">OPTIONAL</span><div className="ttl-input"><input type="number" min="1" max="31536000" value={isNew ? newTtl : ttlInput} onChange={(e) => isNew ? setNewTtl(e.target.value) : setTtlInput(e.target.value)} placeholder={isNew ? "Until session expires" : "Keep current expiry"} disabled={!isNew && (loadingSelectedKey || Boolean(selectedKeyError))} /><span>seconds</span></div></label>
+                  <div className="editor-actions"><button type="submit" className="button button-primary save-button" disabled={busy || loadingSelectedKey || Boolean(selectedKeyError)}>{busy ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}{loadingSelectedKey ? "Loading key…" : isNew ? "Create key" : "Save changes"}</button>{!isNew && <button type="button" className="button button-danger" onClick={deleteKey} disabled={busy || loadingSelectedKey || Boolean(selectedKeyError)}><Trash2 size={15} /> Delete</button>}<button type="button" className="button button-quiet" onClick={() => { setIsNew(false); setSelectedKey(""); setSelectedValue(""); setTtlInput(""); }}>Cancel</button></div>
                 </form>
               ) : (
                 <div className="quick-start">

@@ -99,23 +99,24 @@
       </div>
 
       <div class="card">
-        <h2>What the project is trying to get right</h2>
+        <h2>What is implemented</h2>
         <div class="grid">
-          <div class="pill">Non-blocking I/O</div>
+          <div class="pill">Non-blocking TCP I/O</div>
           <div class="pill">Per-worker epoll loops</div>
-          <div class="pill">Bounded memory</div>
-          <div class="pill">Replication backlog</div>
-          <div class="pill">Throughput metrics</div>
-          <div class="pill">Failover readiness</div>
+          <div class="pill">TTL and memory policies</div>
+          <div class="pill">Concurrent CLI tools</div>
+          <div class="pill">Binary frame limits</div>
+          <div class="pill">Replication not implemented</div>
         </div>
       </div>
 
       <div class="card">
-        <h2>Architecture</h2>
+        <h2>Current architecture</h2>
         <p>
           The server is built around a single acceptor thread and a pool of worker threads. The acceptor
           accepts new TCP connections and hands them to workers in round-robin order. Each worker owns an
           epoll instance and a connection map, making the request path concurrent without a thread-per-connection model.
+          Workers share one mutex-protected in-memory map. The mutation backlog is recorded locally and is not streamed to followers.
         </p>
         <pre class="mermaid">
 flowchart TB
@@ -126,9 +127,8 @@ flowchart TB
     W1 --> D[Command dispatcher]
     W2 --> D
     WN --> D
-    D --> S[(Sharded store)]
-    D --> B[(Replication backlog)]
-    B --> F[Follower / replay stream]
+    D --> S[(Shared store + global mutex)]
+    D --> B[(Local mutation backlog)]
         </pre>
       </div>
 
@@ -145,9 +145,9 @@ sequenceDiagram
     C->>W: framed request
     W->>W: read until EAGAIN
     W->>D: execute command
-    D->>S: lock shard / mutate state
+    D->>S: lock store / mutate state
     S-->>D: result
-    D->>B: append mutating command
+    D->>B: record mutation
     D-->>W: response
     W-->>C: response frame
         </pre>
@@ -157,9 +157,10 @@ sequenceDiagram
         <h2>Core design choices</h2>
         <ul>
           <li><strong>Binary framing:</strong> each request is length-prefixed to avoid text parsing and support fast partial reads.</li>
-          <li><strong>Approximate LRU:</strong> memory pressure under <code>maxmemory</code> is handled by sampling candidate keys and evicting the least-recently-used one.</li>
-          <li><strong>Replica backlog:</strong> mutating operations are logged so followers can replay a bounded stream.</li>
-          <li><strong>Lock granularity:</strong> the keyspace is organized around shard-level locking instead of a single global mutex.</li>
+          <li><strong>Memory policy:</strong> approximate key/value size accounting supports write rejection or an LRU scan under <code>maxmemory</code>; this does not cap total process RSS.</li>
+          <li><strong>TTL:</strong> expired keys are lazily pruned during store operations.</li>
+          <li><strong>Lock granularity:</strong> a single store mutex protects the shared map; sharding is a future optimization.</li>
+          <li><strong>Replication:</strong> mutations are recorded in a local backlog, but follower synchronization and failover are not implemented.</li>
         </ul>
       </div>
 

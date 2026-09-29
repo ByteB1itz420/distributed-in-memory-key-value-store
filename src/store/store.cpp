@@ -2,7 +2,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <charconv>
 #include <cctype>
+#include <limits>
+#include <stdexcept>
 #include <sstream>
 
 namespace kv {
@@ -18,6 +21,30 @@ std::string normalize_policy(std::string policy) {
     });
     return policy;
 }
+
+std::int64_t expiration_time(std::int64_t ttl_seconds) {
+    const auto now = now_ms();
+    if (ttl_seconds > std::numeric_limits<std::int64_t>::max() / 1000) {
+        throw std::out_of_range("TTL is too large");
+    }
+    const auto delta_ms = ttl_seconds * 1000;
+    if (now > std::numeric_limits<std::int64_t>::max() - delta_ms) {
+        throw std::out_of_range("TTL is too large");
+    }
+    return now + delta_ms;
+}
+
+std::int64_t parse_integer(const std::string& value) {
+    std::int64_t parsed = 0;
+    const auto result = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (result.ec == std::errc::result_out_of_range) {
+        throw std::out_of_range("integer value is out of range");
+    }
+    if (result.ec != std::errc{} || result.ptr != value.data() + value.size()) {
+        throw std::invalid_argument("value is not an integer");
+    }
+    return parsed;
+}
 }  // namespace
 
 Store::Store(std::size_t maxmemory_bytes, std::string policy)
@@ -27,19 +54,16 @@ Store::Store(std::size_t maxmemory_bytes, std::string policy)
     }
 }
 
-void Store::set(const std::string& key, const std::string& value, std::optional<int64_t> ttl_seconds) {
+bool Store::set(const std::string& key, const std::string& value, std::optional<std::int64_t> ttl_seconds) {
     std::lock_guard<std::mutex> lock(mutex_);
-    set_locked(key, value, ttl_seconds);
+    return set_locked(key, value, ttl_seconds);
 }
 
-void Store::set_locked(const std::string& key, const std::string& value, std::optional<int64_t> ttl_seconds) {
+bool Store::set_locked(const std::string& key, const std::string& value, std::optional<std::int64_t> ttl_seconds,
+                       bool preserve_ttl) {
     prune_expired_locked();
 
     const auto it = data_.find(key);
-    if (it != data_.end()) {
-        memory_used_ -= it->second.approx_size;
-    }
-
     Entry entry;
     entry.value = value;
     entry.approx_size = sizeof_value(key) + sizeof_value(value);
@@ -48,16 +72,58 @@ void Store::set_locked(const std::string& key, const std::string& value, std::op
 
     if (ttl_seconds.has_value()) {
         if (ttl_seconds.value() <= 0) {
-            data_.erase(key);
-            memory_used_ = std::max<std::size_t>(0, memory_used_);
-            return;
+            if (it != data_.end()) {
+                memory_used_ -= it->second.approx_size;
+                data_.erase(it);
+            }
+            return true;
         }
-        entry.expire_at_ms = now_ms() + (ttl_seconds.value() * 1000LL);
+        entry.expire_at_ms = expiration_time(ttl_seconds.value());
+    } else if (preserve_ttl && it != data_.end()) {
+        entry.expire_at_ms = it->second.expire_at_ms;
     }
 
+    const auto old_size = it == data_.end() ? 0 : it->second.approx_size;
+    const auto used_without_old = memory_used_ - old_size;
+    if (maxmemory_bytes_ != 0 && entry.approx_size > maxmemory_bytes_) {
+        return false;
+    }
+    if (maxmemory_bytes_ != 0 && used_without_old > maxmemory_bytes_ - entry.approx_size) {
+        if (policy_ != "allkeys-lru") {
+            return false;
+        }
+        std::vector<std::pair<std::string, std::uint64_t>> candidates;
+        candidates.reserve(data_.size());
+        for (const auto& [candidate_key, candidate] : data_) {
+            if (candidate_key != key) {
+                candidates.emplace_back(candidate_key, candidate.last_access);
+            }
+        }
+        std::sort(candidates.begin(), candidates.end(), [](const auto& lhs, const auto& rhs) {
+            return lhs.second < rhs.second;
+        });
+        auto projected_size = used_without_old;
+        for (const auto& [candidate_key, _] : candidates) {
+            if (projected_size <= maxmemory_bytes_ - entry.approx_size) {
+                break;
+            }
+            const auto candidate = data_.find(candidate_key);
+            if (candidate == data_.end()) {
+                continue;
+            }
+            projected_size -= candidate->second.approx_size;
+            memory_used_ -= candidate->second.approx_size;
+            data_.erase(candidate);
+        }
+        if (projected_size > maxmemory_bytes_ - entry.approx_size) {
+            return false;
+        }
+    }
+
+    memory_used_ -= old_size;
     data_[key] = entry;
     memory_used_ += entry.approx_size;
-    maybe_evict_locked();
+    return true;
 }
 
 std::optional<std::string> Store::get(const std::string& key) {
@@ -105,7 +171,7 @@ bool Store::expire(const std::string& key, std::int64_t ttl_seconds) {
         return true;
     }
 
-    it->second.expire_at_ms = now_ms() + (ttl_seconds * 1000LL);
+    it->second.expire_at_ms = expiration_time(ttl_seconds);
     return true;
 }
 
@@ -134,38 +200,58 @@ std::int64_t Store::ttl(const std::string& key) const {
     }
 
     const auto remaining_ms = it->second.expire_at_ms - now_ms();
-    return std::max<std::int64_t>(0, (remaining_ms + 999) / 1000);
+    return std::max<std::int64_t>(0, remaining_ms / 1000 + (remaining_ms % 1000 != 0));
 }
 
 std::int64_t Store::incr(const std::string& key, std::int64_t delta) {
     std::lock_guard<std::mutex> lock(mutex_);
     prune_expired_locked();
 
-    auto it = data_.find(key);
+    const auto it = data_.find(key);
     std::int64_t current = 0;
-    if (it == data_.end()) {
-        current = 0;
-    } else {
-        current = std::stoll(it->second.value);
+    if (it != data_.end()) {
+        current = parse_integer(it->second.value);
     }
-
+    if ((delta > 0 && current > std::numeric_limits<std::int64_t>::max() - delta) ||
+        (delta < 0 && current < std::numeric_limits<std::int64_t>::min() - delta)) {
+        throw std::out_of_range("integer overflow");
+    }
     current += delta;
     const std::string serialized = std::to_string(current);
-    set_locked(key, serialized, std::nullopt);
+    if (!set_locked(key, serialized, std::nullopt, true)) {
+        throw std::runtime_error("OOM command not allowed when used memory exceeds maxmemory");
+    }
     return current;
 }
 
 std::int64_t Store::decr(const std::string& key, std::int64_t delta) {
-    return incr(key, -delta);
+    std::lock_guard<std::mutex> lock(mutex_);
+    prune_expired_locked();
+    const auto it = data_.find(key);
+    std::int64_t current = 0;
+    if (it != data_.end()) {
+        current = parse_integer(it->second.value);
+    }
+    if ((delta > 0 && current < std::numeric_limits<std::int64_t>::min() + delta) ||
+        (delta < 0 && current > std::numeric_limits<std::int64_t>::max() + delta)) {
+        throw std::out_of_range("integer overflow");
+    }
+    current -= delta;
+    if (!set_locked(key, std::to_string(current), std::nullopt, true)) {
+        throw std::runtime_error("OOM command not allowed when used memory exceeds maxmemory");
+    }
+    return current;
 }
 
-std::vector<std::string> Store::keys() const {
+std::vector<std::string> Store::keys(const std::string& prefix) const {
     std::lock_guard<std::mutex> lock(mutex_);
     prune_expired_locked();
     std::vector<std::string> result;
-    result.reserve(data_.size());
+    result.reserve(prefix.empty() ? data_.size() : std::min<std::size_t>(data_.size(), 64));
     for (const auto& [key, _] : data_) {
-        result.push_back(key);
+        if (key.compare(0, prefix.size(), prefix) == 0) {
+            result.push_back(key);
+        }
     }
     return result;
 }
@@ -190,6 +276,7 @@ void Store::set_policy(const std::string& policy) {
     if (policy_ != "noeviction" && policy_ != "allkeys-lru") {
         policy_ = "noeviction";
     }
+    maybe_evict_locked();
 }
 
 std::size_t Store::size() const {

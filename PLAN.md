@@ -4,6 +4,8 @@ A Redis-inspired in-memory key-value store in C++ with a custom TCP protocol,
 an epoll-based multithreaded server, LRU eviction, and leader-follower replication.
 
 Started May 2026. This document is the build plan; day-to-day state lives in [STATUS.md](STATUS.md).
+The architecture and features below describe the target design, not all currently shipped
+behavior. In particular, replication and sharded storage are not implemented.
 
 ---
 

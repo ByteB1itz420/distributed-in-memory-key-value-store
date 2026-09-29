@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -16,9 +18,17 @@ public:
     void clear();
 
 private:
+    struct Entry {
+        std::uint64_t offset;
+        std::string command;
+    };
+
+    static constexpr std::size_t max_bytes_ = 1024 * 1024;
+    static constexpr std::size_t max_entries_ = 8192;
     mutable std::mutex mutex_;
-    std::vector<std::string> entries_;
+    std::deque<Entry> entries_;
     std::uint64_t offset_ = 0;
+    std::size_t bytes_used_ = 0;
 };
 
 }  // namespace kv

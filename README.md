@@ -1,15 +1,14 @@
 # kvstore
 
-A distributed in-memory key-value store in C++20 — Redis-inspired, with a custom binary
-TCP protocol, an epoll-based multithreaded server, LRU eviction, and leader-follower
-replication.
+A Redis-inspired, single-node in-memory key-value store in C++20, with a custom binary
+TCP protocol and a multithreaded, epoll-based Linux server. Replication is not implemented;
+the project is not yet a distributed store.
 
-Built as a systems project to work through the things a cache actually has to get right:
-non-blocking I/O at scale, lock granularity, bounded memory, and staying available when a
-node dies.
+Built as a systems project to work through non-blocking I/O, protocol correctness,
+concurrent access, expiration, and memory-pressure behavior.
 
-**Status:** M7 of 7 — see [STATUS.md](STATUS.md). Design and roadmap in [PLAN.md](PLAN.md).
-The repository includes the packaging, CI, and design-page deliverables for the final milestone.
+**Status:** packaging/docs are complete; replication and hardening remain in progress. See
+[STATUS.md](STATUS.md) for shipped functionality and [PLAN.md](PLAN.md) for the target roadmap.
 
 **Live demo:** [kv-store-console.vercel.app](https://kv-store-console.vercel.app) ·
 [Railway API health](https://kvstore-demo-production.up.railway.app/health) · Public,
@@ -25,14 +24,17 @@ restart clears them; the public demo is for trying the UI, not production data.
 
 - **Custom binary protocol** — length-prefixed frames, no text scanning, pipelining supported
 - **epoll event loop per worker thread** — edge-triggered, non-blocking; connections are not threads
-- **Sharded keyspace** — per-shard mutex and LRU, so hot keys don't serialize the whole store
-- **TTL** — lazy expiry on access plus an active sampling cycle
-- **LRU eviction** — approximate, Redis-style sampling under a `maxmemory` cap (`allkeys-lru` policy supported)
-- **Bench harness** — a stress client for concurrent request bursts and throughput baselines
-- **Replication backlog** — mutating commands are logged for stream-based follower replay and failover work
-- **Leader-follower replication** — async command streaming, read-only followers, manual promotion
+- **Shared in-memory map** — protected by a store-wide mutex; operations are thread-safe but serialize on that lock
+- **TTL** — expired keys are removed lazily during store operations; there is no background expiry cycle
+- **Memory policies** — approximate key/value byte accounting; `noeviction` rejects writes over the configured limit and `allkeys-lru` evicts the least recently used entry
+- **Client tools** — interactive CLI, concurrent stress client, and closed-loop latency/throughput benchmark
+- **Replication groundwork** — a bounded in-process backlog records recent mutations, but there is no follower protocol, synchronization, or failover
 
-Commands: `GET SET DEL EXISTS INCR DECR EXPIRE TTL PERSIST KEYS INFO REPLICAOF PING`
+Commands: `GET SET DEL EXISTS INCR DECR EXPIRE TTL PERSIST KEYS [prefix] INFO PING`.
+`REPLICAOF` is recognized but returns an explicit not-implemented error.
+
+The memory limit accounts for key and value sizes plus a small fixed estimate, not total
+process RSS. The LRU policy scans and sorts candidate entries while holding the store lock.
 
 ## Build
 
@@ -86,7 +88,8 @@ DEMO_SECRET=<long-random-secret>
 
 Railway provides `PORT`; the gateway uses it automatically. Generate `DEMO_SECRET` with a
 password manager or `openssl rand -hex 32`. `KV_MAXMEMORY` can be set to adjust the default
-512 MiB store limit.
+512 MiB store limit. The gateway trusts one reverse-proxy hop when determining client IPs
+for rate limits, so keep it behind Railway's ingress rather than exposing it directly.
 
 ### Vercel
 
@@ -108,15 +111,11 @@ in separate terminals.
 ## Run
 
 ```bash
-# leader
 ./build/kvserver --port 6380 --threads 4 --maxmemory 512mb --maxmemory-policy allkeys-lru
-
-# follower
-./build/kvserver --port 6381 --replicaof 127.0.0.1 6380
 
 # client
 ./build/kvcli -p 6380
-> SET session:91af '{"user":17}'
+> SET session:91af "value with spaces"
 OK
 > EXPIRE session:91af 300
 (integer) 1
@@ -132,147 +131,23 @@ flowchart TB
     C2[Client]:::cl --> A
     C3[Client]:::cl --> A
 
-    subgraph Leader
-        A[Acceptor thread]:::sv
-        A -->|round-robin fd| W0[Worker 0 · epoll]:::sv
-        A -->|round-robin fd| W1[Worker 1 · epoll]:::sv
-        A -->|round-robin fd| WN[Worker N · epoll]:::sv
-        W0 --> D{Command dispatch}:::sv
-        W1 --> D
-        WN --> D
-        D --> S[(Sharded store<br/>per-shard lock + LRU)]:::st
-        D -->|mutations| B[(Replication backlog)]:::st
-    end
-
-    B --> F1[Follower · read-only]:::rp
-    B --> F2[Follower · read-only]:::rp
+    A[Acceptor]:::sv -->|round-robin handoff| W0[Worker 0 · epoll]:::sv
+    A -->|round-robin handoff| W1[Worker 1 · epoll]:::sv
+    A -->|round-robin handoff| WN[Worker N · epoll]:::sv
+    W0 --> D{Command dispatch}:::sv
+    W1 --> D
+    WN --> D
+    D -->|store-wide mutex| S[(Shared in-memory map)]:::st
+    D -->|mutations recorded| B[(Replication backlog only)]:::st
 
     classDef cl fill:#e8eef7,stroke:#5b7aa8,color:#1c2a3a
     classDef sv fill:#f2f2f0,stroke:#8a8a84,color:#26262a
     classDef st fill:#eae6f2,stroke:#7d6fa6,color:#26202f
-    classDef rp fill:#e6f0ea,stroke:#6a9480,color:#1e2d26
 ```
 
-### Class model
-
-```mermaid
-classDiagram
-    class Server {
-        -Config cfg
-        -Acceptor acceptor
-        -vector~Worker~ workers
-        +run() void
-        +shutdown() void
-    }
-    class Worker {
-        -int epfd
-        -unordered_map~int,Connection~ conns
-        +loop() void
-        +attach(fd) void
-        -onReadable(Connection&) void
-        -onWritable(Connection&) void
-    }
-    class Connection {
-        -int fd
-        -Buffer inbuf
-        -Buffer outbuf
-        +readFrames() vector~Command~
-        +queue(Response) void
-        +flush() bool
-    }
-    class Codec {
-        +decode(Buffer&) optional~Command~
-        +encode(Response) Buffer
-    }
-    class Dispatcher {
-        -Store& store
-        -ReplBacklog& backlog
-        +execute(Command) Response
-    }
-    class Store {
-        -array~Shard~ shards
-        -size_t maxmemory
-        +get(key) optional~Value~
-        +set(key, val, ttl) void
-        +del(key) bool
-        -shardFor(key) Shard&
-        -evictIfNeeded() void
-    }
-    class Shard {
-        -mutex mtx
-        -unordered_map~string,Entry~ map
-        -LruClock lru
-        +sampleVictim() Entry*
-    }
-    class Entry {
-        +string value
-        +int64 expireAt
-        +uint32 lastAccess
-    }
-    class ReplBacklog {
-        -RingBuffer ring
-        -uint64 offset
-        +append(Command) void
-        +since(offset) span
-    }
-    class ReplicaLink {
-        -int fd
-        -uint64 ackOffset
-        +handshake() void
-        +stream() void
-    }
-
-    Server *-- Worker
-    Server *-- Dispatcher
-    Worker *-- Connection
-    Connection ..> Codec : uses
-    Dispatcher --> Store
-    Dispatcher --> ReplBacklog
-    Store *-- Shard
-    Shard *-- Entry
-    ReplBacklog --> ReplicaLink : feeds
-```
-
-### Request path
-
-```mermaid
-sequenceDiagram
-    participant Cl as Client
-    participant W as Worker (epoll)
-    participant D as Dispatcher
-    participant S as Shard
-    participant B as Backlog
-    participant F as Follower
-
-    Cl->>W: SET k v  (framed)
-    W->>W: read to EAGAIN, decode frames
-    W->>D: execute(SET k v)
-    D->>S: lock shard(hash(k))
-    S->>S: insert, touch LRU
-    alt memory over maxmemory
-        S->>S: sample N keys, evict oldest
-    end
-    S-->>D: OK
-    D->>B: append(SET k v)
-    D-->>W: +OK
-    W-->>Cl: response frame
-    B-->>F: stream from offset
-    F->>F: apply, ack offset
-```
-
-### Failover
-
-```mermaid
-stateDiagram-v2
-    [*] --> Follower
-    Follower --> Syncing: REPLICAOF host port
-    Syncing --> Streaming: full snapshot received
-    Streaming --> Follower: link healthy
-    Streaming --> Disconnected: leader unreachable
-    Disconnected --> Syncing: reconnect (backlog still covers offset)
-    Disconnected --> Leader: REPLICAOF NO ONE (manual promotion)
-    Leader --> [*]
-```
+The acceptor hands non-blocking sockets to workers through per-worker event queues.
+Each worker uses edge-triggered epoll and owns its connection buffers. The store itself
+uses one mutex; the backlog is only an in-process record and does not feed a follower.
 
 ## Protocol
 
@@ -285,36 +160,23 @@ response : [u32 total][u8 type][payload]
 ```
 
 Framing is fixed-width, so the parser never scans for delimiters and a partial read is
-resumed from the byte offset it stopped at.
+resumed from the byte offset it stopped at. Arrays contain a `u32` item count followed by
+length-prefixed items. Requests are limited to 64 arguments and 16 MiB per frame.
 
-## Design notes
-
-**Why one epoll loop per thread rather than a shared loop?** A single loop with a thread
-pool behind it needs a handoff queue and a wakeup per event. Pinning each connection to a
-worker keeps the connection's buffers in that thread, so nothing about the socket needs a
-lock.
-
-**Why sharded locks rather than one global mutex?** The store is the only shared state.
-Splitting it into `2^k` independently locked shards turns a single contention point into
-`2^k` of them, and hashing spreads keys evenly. The tradeoff is that cross-key atomicity
-would need multi-shard locking in a fixed order.
-
-**Why approximate LRU?** An exact LRU list means every read mutates a shared list, turning
-reads into writes. Sampling a handful of keys and evicting the oldest gets close to true
-LRU at a fraction of the cost — the same tradeoff Redis makes.
+The implementation and remaining milestones are tracked in [STATUS.md](STATUS.md); the
+broader target architecture is described in [PLAN.md](PLAN.md).
 
 ## Repository layout
 
 ```
-src/net/     sockets, epoll loop, buffers
+src/server/  acceptor, epoll worker loops, command dispatch
 src/proto/   frame codec
-src/store/   sharded map, LRU, expiry
-src/repl/    backlog, leader feeder, follower client
-src/server/  config, worker pool, dispatch
+src/store/   shared map, memory policy, lazy expiry
+src/repl/    mutation backlog groundwork only
 src/cli/     interactive client
 tests/  bench/  docs/
 ```
 
 ## License
 
-MIT
+No `LICENSE` file is currently included; reuse terms are not specified in this repository.
