@@ -1,5 +1,7 @@
 # kvstore
 
+![CI](https://github.com/ByteB1itz420/distributed-in-memory-key-value-store/actions/workflows/ci.yml/badge.svg)
+
 A distributed in-memory key-value store in C++20 — Redis-inspired, with a custom binary
 TCP protocol, an epoll-based multithreaded server, LRU eviction, and leader-follower
 replication.
@@ -8,8 +10,8 @@ Built as a systems project to work through the things a cache actually has to ge
 non-blocking I/O at scale, lock granularity, bounded memory, and staying available when a
 node dies.
 
-**Status:** M3 of 7 — see [STATUS.md](STATUS.md). Design and roadmap in [PLAN.md](PLAN.md).
-No throughput numbers are published yet; the benchmark harness is M6.
+**Status:** M7 of 7 — see [STATUS.md](STATUS.md). Design and roadmap in [PLAN.md](PLAN.md).
+The repository includes the packaging, CI, and design-page deliverables for the final milestone.
 
 ---
 
@@ -35,6 +37,23 @@ ctest --test-dir build
 ```
 
 Requires a C++20 compiler (GCC 12+ / Clang 15+) and Linux — the server depends on `epoll`.
+
+## Packaging and CI
+
+```bash
+# build the container image
+podman build -t kvstore .
+# or
+docker build -t kvstore .
+
+# run the server in the container
+docker run --rm -p 6380:6380 kvstore
+```
+
+The repo also ships with a GitHub Actions matrix for GCC/Clang and Debug/Release builds,
+plus sanitizer coverage in CI. See the workflow at [.github/workflows/ci.yml](.github/workflows/ci.yml).
+
+The architecture walkthrough is published in [docs/index.html](docs/index.html).
 
 ## Run
 

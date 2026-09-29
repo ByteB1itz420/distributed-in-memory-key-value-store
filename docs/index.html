@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Distributed In-Memory Key-Value Store</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --panel-alt: #1f2937;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --accent: #7dd3fc;
+        --accent-2: #c4b5fd;
+        --success: #34d399;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: linear-gradient(180deg, #020817 0%, var(--bg) 100%);
+        color: var(--text);
+        line-height: 1.6;
+      }
+      .container {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 48px 20px 80px;
+      }
+      h1, h2, h3 {
+        color: var(--text);
+        margin-top: 0;
+      }
+      .header {
+        padding: 32px 0 12px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+      }
+      .tag {
+        display: inline-block;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(125, 211, 252, 0.12);
+        border: 1px solid rgba(125, 211, 252, 0.35);
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .card {
+        background: rgba(17, 24, 39, 0.9);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 18px;
+        padding: 22px;
+        margin-top: 22px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 999px;
+        padding: 6px 10px;
+        background: rgba(196, 181, 253, 0.12);
+        border: 1px solid rgba(196, 181, 253, 0.2);
+        color: var(--accent-2);
+        font-size: 14px;
+      }
+      code, pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      pre {
+        background: rgba(15, 23, 42, 0.85);
+        border: 1px solid rgba(148, 163, 184, 0.15);
+        border-radius: 12px;
+        padding: 12px 14px;
+        color: #cbd5e1;
+        overflow-x: auto;
+      }
+      a {
+        color: var(--accent);
+      }
+      .muted {
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <div class="tag">Systems design</div>
+        <h1>Distributed in-memory key-value store</h1>
+        <p class="muted">A Linux-native C++ cache built around epoll, frame-based TCP I/O, and a Redis-inspired command model.</p>
+      </div>
+
+      <div class="card">
+        <h2>What the project is trying to get right</h2>
+        <div class="grid">
+          <div class="pill">Non-blocking I/O</div>
+          <div class="pill">Per-worker epoll loops</div>
+          <div class="pill">Bounded memory</div>
+          <div class="pill">Replication backlog</div>
+          <div class="pill">Throughput metrics</div>
+          <div class="pill">Failover readiness</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Architecture</h2>
+        <p>
+          The server is built around a single acceptor thread and a pool of worker threads. The acceptor
+          accepts new TCP connections and hands them to workers in round-robin order. Each worker owns an
+          epoll instance and a connection map, making the request path concurrent without a thread-per-connection model.
+        </p>
+        <pre class="mermaid">
+flowchart TB
+    C[Clients] --> A[Acceptor thread]
+    A --> W1[Worker 0]
+    A --> W2[Worker 1]
+    A --> WN[Worker N]
+    W1 --> D[Command dispatcher]
+    W2 --> D
+    WN --> D
+    D --> S[(Sharded store)]
+    D --> B[(Replication backlog)]
+    B --> F[Follower / replay stream]
+        </pre>
+      </div>
+
+      <div class="card">
+        <h2>Request lifecycle</h2>
+        <pre class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant W as Worker
+    participant D as Dispatcher
+    participant S as Store
+    participant B as Backlog
+
+    C->>W: framed request
+    W->>W: read until EAGAIN
+    W->>D: execute command
+    D->>S: lock shard / mutate state
+    S-->>D: result
+    D->>B: append mutating command
+    D-->>W: response
+    W-->>C: response frame
+        </pre>
+      </div>
+
+      <div class="card">
+        <h2>Core design choices</h2>
+        <ul>
+          <li><strong>Binary framing:</strong> each request is length-prefixed to avoid text parsing and support fast partial reads.</li>
+          <li><strong>Approximate LRU:</strong> memory pressure under <code>maxmemory</code> is handled by sampling candidate keys and evicting the least-recently-used one.</li>
+          <li><strong>Replica backlog:</strong> mutating operations are logged so followers can replay a bounded stream.</li>
+          <li><strong>Lock granularity:</strong> the keyspace is organized around shard-level locking instead of a single global mutex.</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <h2>Build and run</h2>
+        <pre>
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build
+./build/kvserver --port 6380 --threads 4 --maxmemory 512mb --maxmemory-policy allkeys-lru
+./build/kvcli -p 6380
+        </pre>
+      </div>
+    </div>
+
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({ startOnLoad: true, theme: 'dark', securityLevel: 'loose' });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,7 @@
+build/
+.venv/
+.git/
+.github/
+.vscode/
+**/*.swp
+**/*.log

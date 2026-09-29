@@ -1,10 +1,9 @@
 # Status
 
-**Updated:** 2026-09-29 · **Phase:** M3 (multithreading) · **Started:** May 2026
+**Updated:** 2026-09-29 · **Phase:** M7 (packaging + docs) · **Started:** May 2026
 
-> First snapshot. The milestone states below follow the resume-level description of the
-> project; correct any line that doesn't match the tree, then keep this file current —
-> one edit per working session is enough.
+> Final milestone snapshot for the packaging and CI deliverables. This file is kept aligned
+> with the repository tree and the current set of shipped artifacts.
 
 ## Milestones
 
