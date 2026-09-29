@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHmac, randomUUID } from "node:crypto";
 import net from "node:net";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
@@ -75,6 +76,8 @@ test("signed demo sessions operate on isolated keys in the C++ store", { timeout
   const firstSession = await api(baseUrl, null, "/demo/session", { method: "POST" });
   assert.equal(firstSession.response.status, 201);
   const firstToken = firstSession.body.accessToken;
+  const validSession = await api(baseUrl, firstToken, "/demo/session");
+  assert.ok(validSession.body.expiresAt > Math.floor(Date.now() / 1000));
 
   const initialKeys = await api(baseUrl, firstToken, "/keys");
   assert.deepEqual(initialKeys.body.keys, ["sample:json", "welcome"]);
@@ -93,6 +96,16 @@ test("signed demo sessions operate on isolated keys in the C++ store", { timeout
     body: JSON.stringify({ key: "integration:key", value: "updated", ttlSeconds: null }),
   });
   assert.equal(updated.response.status, 201);
+  const fetchedAfterUpdate = await api(baseUrl, firstToken, "/keys/integration%3Akey");
+  assert.ok(fetchedAfterUpdate.body.ttlSeconds > 0 && fetchedAfterUpdate.body.ttlSeconds <= 30);
+
+  const persistentRequest = await api(baseUrl, firstToken, "/keys", {
+    method: "POST",
+    body: JSON.stringify({ key: "session:bounded", value: "bounded by session lifetime" }),
+  });
+  assert.equal(persistentRequest.response.status, 201);
+  const bounded = await api(baseUrl, firstToken, "/keys/session%3Abounded");
+  assert.ok(bounded.body.ttlSeconds > 0 && bounded.body.ttlSeconds <= 3600);
 
   const secondSession = await api(baseUrl, null, "/demo/session", { method: "POST" });
   const secondKeys = await api(baseUrl, secondSession.body.accessToken, "/keys");
@@ -100,6 +113,14 @@ test("signed demo sessions operate on isolated keys in the C++ store", { timeout
 
   const invalid = await api(baseUrl, "forged-token", "/keys");
   assert.equal(invalid.response.status, 401);
+
+  const expiredId = randomUUID();
+  const expiredAt = Math.floor(Date.now() / 1000) - 1;
+  const expiredSignature = createHmac("sha256", "integration-test-secret-at-least-32-bytes-long")
+    .update(`${expiredId}.${expiredAt}`)
+    .digest("base64url");
+  const expired = await api(baseUrl, `${expiredId}.${expiredAt}.${expiredSignature}`, "/keys");
+  assert.equal(expired.response.status, 401);
 
   const deleted = await api(baseUrl, firstToken, "/keys/integration%3Akey", { method: "DELETE" });
   assert.deepEqual(deleted.body, { deleted: true });

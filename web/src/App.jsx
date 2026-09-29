@@ -23,6 +23,17 @@ import {
 
 const apiUrl = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
 
+async function responseJson(response) {
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    throw new Error("The API returned an invalid response");
+  }
+  if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
+  return body;
+}
+
 async function getJson(path, accessToken, options = {}) {
   const response = await fetch(`${apiUrl}/api${path}`, {
     ...options,
@@ -32,14 +43,12 @@ async function getJson(path, accessToken, options = {}) {
       ...options.headers,
     },
   });
-  let body;
-  try {
-    body = await response.json();
-  } catch {
-    throw new Error("The API returned an invalid response");
-  }
-  if (!response.ok) throw new Error(body.error ?? `Request failed (${response.status})`);
-  return body;
+  return responseJson(response);
+}
+
+async function createDemoSession() {
+  const response = await fetch(`${apiUrl}/api/demo/session`, { method: "POST" });
+  return responseJson(response);
 }
 
 function App() {
@@ -53,21 +62,25 @@ function App() {
       return;
     }
     let active = true;
-    const storedToken = window.sessionStorage.getItem("kvstore-demo-token");
-    const openSession = storedToken
-      ? Promise.resolve({ accessToken: storedToken })
-      : fetch(`${apiUrl}/api/demo/session`, { method: "POST" })
-          .then(async (response) => {
-            const body = await response.json();
-            if (!response.ok) throw new Error(body.error ?? `Could not start demo (${response.status})`);
-            return body;
-          });
-    openSession.then((demo) => {
+    (async () => {
+      let token = window.sessionStorage.getItem("kvstore-demo-token");
+      if (token) {
+        const response = await fetch(`${apiUrl}/api/demo/session`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (response.status === 401) {
+          window.sessionStorage.removeItem("kvstore-demo-token");
+          token = null;
+        } else {
+          await responseJson(response);
+        }
+      }
+      const demo = token ? { accessToken: token } : await createDemoSession();
       if (!active) return;
       window.sessionStorage.setItem("kvstore-demo-token", demo.accessToken);
       setSession({ access_token: demo.accessToken, user: { email: "Demo workspace" } });
       setError("");
-    }).catch((cause) => {
+    })().catch((cause) => {
       if (active) setError(cause.message);
     }).finally(() => {
       if (active) setLoading(false);
@@ -80,9 +93,7 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const response = await fetch(`${apiUrl}/api/demo/session`, { method: "POST" });
-      const body = await response.json();
-      if (!response.ok) throw new Error(body.error ?? `Could not start demo (${response.status})`);
+      const body = await createDemoSession();
       window.sessionStorage.setItem("kvstore-demo-token", body.accessToken);
       setSession({ access_token: body.accessToken, user: { email: "Demo workspace" } });
     } catch (cause) {

@@ -72,8 +72,8 @@ The web console is a separate Vercel project rooted at `web/`. Its HTTP API gate
 C++ store run together in the Railway container; the C++ TCP listener is bound to loopback
 and is not exposed publicly. The public demo uses signed per-browser sessions to keep each
 visitor's keys separate. Demo sessions are public and intended for testing, not for storing
-secrets. The key/value data remains in memory and is lost when the Railway process restarts
-or a key is evicted.
+secrets. Sessions and their keys expire after one hour; the key/value data remains in memory
+and is also lost when the Railway process restarts or a key is evicted.
 
 ### Railway
 
@@ -97,9 +97,10 @@ VITE_API_URL=https://<your-railway-domain>
 ```
 
 Deploy, then update Railway's `WEB_ORIGINS` to the exact Vercel production origin and
-redeploy the Railway service. The web app provides separate demo sessions, live key listing, create/update/delete, and
-optional TTL. Sessions are limited to 50 keys and 16 KB per value. For local UI development,
-copy `web/.env.example` to `web/.env.local` and update
+redeploy the Railway service. The web app provides separate demo sessions, live key listing,
+create/update/delete, and optional TTL. Sessions last one hour and are limited to 50 keys
+and 16 KB per value. For local UI development, copy `web/.env.example` to `web/.env.local`
+and update
 its API URL. Run `kvserver` locally, copy `gateway/.env.example` to `gateway/.env`, set
 `START_KV_SERVER=false`, then run `npm start` from `gateway/` and `npm run dev` from `web/`
 in separate terminals.

@@ -15,6 +15,7 @@ const allowedOrigins = new Set(
     .filter(Boolean),
 );
 const demoSecret = process.env.DEMO_SECRET ?? randomBytes(32).toString("hex");
+const demoSessionTtlSeconds = 60 * 60;
 if (!process.env.DEMO_SECRET) {
   console.warn("DEMO_SECRET is unset; demo sessions will be invalidated when this process restarts");
 }
@@ -70,17 +71,19 @@ app.get("/health", async (_req, res) => {
   }
 });
 
-function signDemoSession(id) {
-  return createHmac("sha256", demoSecret).update(id).digest("base64url");
+function signDemoSession(id, expiresAt) {
+  return createHmac("sha256", demoSecret).update(`${id}.${expiresAt}`).digest("base64url");
 }
 
 function isValidDemoToken(token) {
-  const match = /^([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/.exec(token);
+  const match = /^([0-9a-f-]{36})\.(\d{10})\.([A-Za-z0-9_-]{43})$/.exec(token);
   if (!match) return null;
-  const expected = Buffer.from(signDemoSession(match[1]));
-  const supplied = Buffer.from(match[2]);
+  const expiresAt = Number(match[2]);
+  if (expiresAt <= Math.floor(Date.now() / 1000)) return null;
+  const expected = Buffer.from(signDemoSession(match[1], expiresAt));
+  const supplied = Buffer.from(match[3]);
   if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) return null;
-  return match[1];
+  return { id: match[1], expiresAt };
 }
 
 const demoSessionLimiter = rateLimit({
@@ -92,10 +95,14 @@ const demoSessionLimiter = rateLimit({
 
 app.post("/api/demo/session", demoSessionLimiter, async (_req, res) => {
   const id = randomUUID();
+  const expiresAt = Math.floor(Date.now() / 1000) + demoSessionTtlSeconds;
   const prefix = `user:demo-${id}:`;
-  await sendCommand(["SET", `${prefix}welcome`, "Your demo is live. Edit or delete this key to try the store."]);
-  await sendCommand(["SET", `${prefix}sample:json`, "{\"project\":\"kv.store\",\"mode\":\"in-memory\"}"]);
-  res.status(201).json({ accessToken: `${id}.${signDemoSession(id)}` });
+  await sendCommand(["SET", `${prefix}welcome`, "Your demo is live. Edit or delete this key to try the store.", String(demoSessionTtlSeconds)]);
+  await sendCommand(["SET", `${prefix}sample:json`, "{\"project\":\"kv.store\",\"mode\":\"in-memory\"}", String(demoSessionTtlSeconds)]);
+  res.status(201).json({
+    accessToken: `${id}.${expiresAt}.${signDemoSession(id, expiresAt)}`,
+    expiresAt,
+  });
 });
 
 app.use("/api", async (req, res, next) => {
@@ -105,16 +112,21 @@ app.use("/api", async (req, res, next) => {
     res.status(401).json({ error: "A valid demo session is required" });
     return;
   }
-  const id = isValidDemoToken(match[1]);
-  if (!id) {
+  const demoSession = isValidDemoToken(match[1]);
+  if (!demoSession) {
     res.status(401).json({ error: "Demo session is invalid; start a new demo session" });
     return;
   }
-  req.userId = `demo-${id}`;
+  req.userId = `demo-${demoSession.id}`;
+  req.demoExpiresAt = demoSession.expiresAt;
   next();
 });
 
 const physicalKey = (userId, key) => `user:${userId}:${key}`;
+
+app.get("/api/demo/session", (req, res) => {
+  res.json({ expiresAt: req.demoExpiresAt });
+});
 
 function validateKey(key) {
   if (typeof key !== "string" || key.length === 0 || Buffer.byteLength(key, "utf8") > 256 || /[\r\n\0]/.test(key)) {
@@ -161,6 +173,11 @@ app.post("/api/keys", async (req, res) => {
     res.status(400).json({ error: "TTL must be blank or a whole number between 1 and 31,536,000 seconds" });
     return;
   }
+  const remainingTtl = req.demoExpiresAt - Math.floor(Date.now() / 1000);
+  if (remainingTtl < 1) {
+    res.status(401).json({ error: "Demo session expired; start a new demo session" });
+    return;
+  }
   const prefix = `user:${req.userId}:`;
   const existingKeys = await sendCommand(["KEYS"]);
   if (!existingKeys.includes(`${prefix}${key}`) &&
@@ -168,13 +185,10 @@ app.post("/api/keys", async (req, res) => {
     res.status(429).json({ error: "This demo session is limited to 50 keys" });
     return;
   }
-  const args = ["SET", physicalKey(req.userId, key), value];
-  if (Number.isSafeInteger(ttlSeconds)) {
-    args.push(String(ttlSeconds));
-  } else if (ttlSeconds === undefined) {
-    const existingTtl = await sendCommand(["TTL", physicalKey(req.userId, key)]);
-    if (existingTtl > 0) args.push(String(existingTtl));
-  }
+  const existingTtl = await sendCommand(["TTL", physicalKey(req.userId, key)]);
+  const requestedTtl = Number.isSafeInteger(ttlSeconds) ? ttlSeconds : existingTtl;
+  const effectiveTtl = requestedTtl > 0 ? Math.min(requestedTtl, remainingTtl) : remainingTtl;
+  const args = ["SET", physicalKey(req.userId, key), value, String(effectiveTtl)];
   await sendCommand(args);
   res.status(201).json({ key });
 });
