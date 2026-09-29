@@ -6,6 +6,7 @@
 namespace kv {
 
 struct ServerConfig {
+    std::string host = "0.0.0.0";
     int port = 6380;
     std::size_t maxmemory = 0;
     std::string maxmemory_policy = "noeviction";

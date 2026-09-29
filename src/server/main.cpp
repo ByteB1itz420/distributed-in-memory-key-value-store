@@ -8,7 +8,9 @@ int main(int argc, char** argv) {
     kv::ServerConfig config;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--port" && i + 1 < argc) {
+        if (arg == "--host" && i + 1 < argc) {
+            config.host = argv[++i];
+        } else if (arg == "--port" && i + 1 < argc) {
             config.port = std::stoi(argv[++i]);
         } else if (arg == "--threads" && i + 1 < argc) {
             config.threads = static_cast<std::size_t>(std::stoull(argv[++i]));

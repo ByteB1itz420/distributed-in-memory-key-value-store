@@ -1,15 +1,27 @@
-FROM ubuntu:24.04
+FROM node:22-bookworm-slim AS build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
-    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
-COPY . /workspace
-RUN cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
+COPY CMakeLists.txt ./
+COPY src ./src
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build --target kvserver -j2
 
-EXPOSE 6380
+FROM node:22-bookworm-slim
 
-CMD ["/workspace/build/kvserver", "--port", "6380", "--threads", "4", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+ENV NODE_ENV=production \
+    KV_HOST=127.0.0.1 \
+    KV_PORT=6380
+
+WORKDIR /app
+COPY gateway/package*.json ./
+RUN npm ci --omit=dev
+COPY gateway/ ./
+COPY --from=build /workspace/build/kvserver /usr/local/bin/kvserver
+
+EXPOSE 8080
+CMD ["node", "index.js"]

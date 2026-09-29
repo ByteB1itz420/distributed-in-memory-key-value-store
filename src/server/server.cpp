@@ -36,7 +36,7 @@ struct ConnectionState {
     std::vector<std::uint8_t> outbuf;
 };
 
-int make_listen_socket(int port) {
+int make_listen_socket(const std::string& host, int port) {
     const int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (fd < 0) {
         throw std::runtime_error("socket() failed");
@@ -47,7 +47,10 @@ int make_listen_socket(int port) {
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        close(fd);
+        throw std::runtime_error("invalid listen address");
+    }
     addr.sin_port = htons(static_cast<uint16_t>(port));
 
     if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
@@ -298,7 +301,7 @@ Server::Server(ServerConfig config) : config_(std::move(config)) {}
 void Server::run() {
     Store store(config_.maxmemory, config_.maxmemory_policy);
     ReplBacklog backlog;
-    const int listen_fd = make_listen_socket(config_.port);
+    const int listen_fd = make_listen_socket(config_.host, config_.port);
     const std::size_t worker_count = std::max<std::size_t>(1, config_.threads);
 
     std::vector<WorkerQueue> queues(worker_count);

@@ -44,12 +44,68 @@ podman build -t kvstore .
 # or
 docker build -t kvstore .
 
-# run the server in the container
-docker run --rm -p 6380:6380 kvstore
+# run the HTTP gateway (configure auth before using the API)
+docker run --rm -p 8080:8080 \
+  -e SUPABASE_URL=https://<project-ref>.supabase.co \
+  -e SUPABASE_ANON_KEY=<publishable-or-anon-key> \
+  -e WEB_ORIGINS=http://localhost:5173 \
+  kvstore
 ```
 
 The repository includes a Docker image and local build presets for repeatable testing and
 packaging work. The architecture walkthrough is published in [docs/index.html](docs/index.html).
+
+## Web console deployment
+
+The web console is a separate Vercel project rooted at `web/`. Its HTTP API gateway and the
+C++ store run together in the Railway container; the C++ TCP listener is bound to loopback
+and is not exposed publicly. Supabase Auth protects the API, and the gateway namespaces keys
+by authenticated user. The key/value data itself remains in memory and is lost when the
+Railway process restarts or a key is evicted.
+
+### Railway
+
+Deploy the repository root using its `Dockerfile`, then set these service variables:
+
+```text
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_ANON_KEY=<publishable-or-anon-key>
+WEB_ORIGINS=https://<your-vercel-domain>,http://localhost:5173
+```
+
+Railway provides `PORT`; the gateway uses it automatically. `KV_MAXMEMORY` can be set to
+adjust the default 512 MiB store limit.
+
+### Supabase Auth
+
+Use the Supabase CLI to sign in and identify the project, or configure it in the Supabase
+dashboard:
+
+```bash
+npx supabase login
+npx supabase projects list
+```
+
+Enable email sign-up and add your Vercel deployment URL to the Auth URL configuration
+(Site URL and allowed redirect URLs). Only the project's publishable/anon key is used by
+the web app and Railway gateway. Never use a service-role key here.
+
+### Vercel
+
+Import this GitHub repository, set the project root directory to `web`, and add:
+
+```text
+VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+VITE_SUPABASE_ANON_KEY=<publishable-or-anon-key>
+VITE_API_URL=https://<your-railway-domain>
+```
+
+Deploy, then update Railway's `WEB_ORIGINS` to the exact Vercel production origin and
+redeploy the Railway service. The web app supports sign-up/sign-in, per-account key
+listing, create/update/delete, and optional TTL. For local UI development, copy
+`web/.env.example` to `web/.env.local` and update its values. Run `kvserver` locally, copy
+`gateway/.env.example` to `gateway/.env` and update its values, then run `npm start` from
+`gateway/` and `npm run dev` from `web/` in separate terminals.
 
 ## Run
 
