@@ -1,7 +1,5 @@
 # kvstore
 
-![CI](https://github.com/ByteB1itz420/distributed-in-memory-key-value-store/actions/workflows/ci.yml/badge.svg)
-
 A distributed in-memory key-value store in C++20 — Redis-inspired, with a custom binary
 TCP protocol, an epoll-based multithreaded server, LRU eviction, and leader-follower
 replication.
@@ -50,10 +48,8 @@ docker build -t kvstore .
 docker run --rm -p 6380:6380 kvstore
 ```
 
-The repo also ships with a GitHub Actions matrix for GCC/Clang and Debug/Release builds,
-plus sanitizer coverage in CI. See the workflow at [.github/workflows/ci.yml](.github/workflows/ci.yml).
-
-The architecture walkthrough is published in [docs/index.html](docs/index.html).
+The repository includes a Docker image and local build presets for repeatable testing and
+packaging work. The architecture walkthrough is published in [docs/index.html](docs/index.html).
 
 ## Run
 
