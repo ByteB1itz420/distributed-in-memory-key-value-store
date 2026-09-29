@@ -1,3 +1,4 @@
+#include "../src/repl/backlog.hpp"
 #include "../src/store/store.hpp"
 
 #include <cassert>
@@ -32,6 +33,14 @@ int main() {
     capped.set("a", "abc");
     capped.set("b", "defgh");
     assert(capped.get("a").has_value() || capped.get("b").has_value());
+
+    kv::ReplBacklog backlog;
+    backlog.append({"SET", "k", "v"});
+    backlog.append({"DEL", "k"});
+    assert(backlog.size() == 2);
+    const auto since = backlog.since(1);
+    assert(since.size() == 1);
+    assert(since[0].find("DEL") != std::string::npos);
 
     std::cout << "kvstore tests passed\n";
     return 0;

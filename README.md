@@ -21,6 +21,7 @@ No throughput numbers are published yet; the benchmark harness is M6.
 - **TTL** — lazy expiry on access plus an active sampling cycle
 - **LRU eviction** — approximate, Redis-style sampling under a `maxmemory` cap (`allkeys-lru` policy supported)
 - **Bench harness** — a stress client for concurrent request bursts and throughput baselines
+- **Replication backlog** — mutating commands are logged for stream-based follower replay and failover work
 - **Leader-follower replication** — async command streaming, read-only followers, manual promotion
 
 Commands: `GET SET DEL EXISTS INCR DECR EXPIRE TTL PERSIST KEYS INFO REPLICAOF PING`

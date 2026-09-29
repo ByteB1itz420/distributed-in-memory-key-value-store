@@ -10,6 +10,9 @@ struct ServerConfig {
     std::size_t maxmemory = 0;
     std::string maxmemory_policy = "noeviction";
     std::size_t threads = 4;
+    std::string replicaof_host;
+    int replicaof_port = -1;
+    bool leader_mode = true;
 };
 
 class Server {

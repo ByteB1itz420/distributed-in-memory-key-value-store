@@ -1,6 +1,7 @@
 #include "server.hpp"
 
 #include "../proto/protocol.hpp"
+#include "../repl/backlog.hpp"
 #include "../store/store.hpp"
 
 #include <arpa/inet.h>
@@ -61,7 +62,7 @@ int make_listen_socket(int port) {
     return fd;
 }
 
-std::vector<std::uint8_t> process_command(Store& store, const std::vector<std::string>& argv) {
+std::vector<std::uint8_t> process_command(Store& store, ReplBacklog* backlog, const std::vector<std::string>& argv) {
     if (argv.empty()) {
         return FrameCodec::encode_response_error("ERR empty command");
     }
@@ -76,6 +77,9 @@ std::vector<std::uint8_t> process_command(Store& store, const std::vector<std::s
         }
         const auto ttl = (argv.size() >= 4) ? std::optional<std::int64_t>(std::stoll(argv[3])) : std::nullopt;
         store.set(argv[1], argv[2], ttl);
+        if (backlog != nullptr) {
+            backlog->append(argv);
+        }
         return FrameCodec::encode_response_ok();
     }
     if (cmd == "GET") {
@@ -93,6 +97,9 @@ std::vector<std::uint8_t> process_command(Store& store, const std::vector<std::s
             return FrameCodec::encode_response_error("ERR wrong number of arguments for DEL");
         }
         const bool ok = store.del(argv[1]);
+        if (backlog != nullptr && ok) {
+            backlog->append(argv);
+        }
         return FrameCodec::encode_response_int(ok ? 1 : 0);
     }
     if (cmd == "EXISTS") {
@@ -105,7 +112,11 @@ std::vector<std::uint8_t> process_command(Store& store, const std::vector<std::s
         if (argv.size() != 3) {
             return FrameCodec::encode_response_error("ERR wrong number of arguments for EXPIRE");
         }
-        return FrameCodec::encode_response_int(store.expire(argv[1], std::stoll(argv[2])) ? 1 : 0);
+        const bool ok = store.expire(argv[1], std::stoll(argv[2]));
+        if (backlog != nullptr && ok) {
+            backlog->append(argv);
+        }
+        return FrameCodec::encode_response_int(ok ? 1 : 0);
     }
     if (cmd == "TTL") {
         if (argv.size() != 2) {
@@ -117,26 +128,48 @@ std::vector<std::uint8_t> process_command(Store& store, const std::vector<std::s
         if (argv.size() != 2) {
             return FrameCodec::encode_response_error("ERR wrong number of arguments for PERSIST");
         }
-        return FrameCodec::encode_response_int(store.persist(argv[1]) ? 1 : 0);
+        const bool ok = store.persist(argv[1]);
+        if (backlog != nullptr && ok) {
+            backlog->append(argv);
+        }
+        return FrameCodec::encode_response_int(ok ? 1 : 0);
     }
     if (cmd == "INCR") {
         if (argv.size() != 2) {
             return FrameCodec::encode_response_error("ERR wrong number of arguments for INCR");
         }
-        return FrameCodec::encode_response_int(store.incr(argv[1]));
+        const auto value = store.incr(argv[1]);
+        if (backlog != nullptr) {
+            backlog->append({"INCR", argv[1]});
+        }
+        return FrameCodec::encode_response_int(value);
     }
     if (cmd == "DECR") {
         if (argv.size() != 2) {
             return FrameCodec::encode_response_error("ERR wrong number of arguments for DECR");
         }
-        return FrameCodec::encode_response_int(store.decr(argv[1]));
+        const auto value = store.decr(argv[1]);
+        if (backlog != nullptr) {
+            backlog->append({"DECR", argv[1]});
+        }
+        return FrameCodec::encode_response_int(value);
     }
     if (cmd == "KEYS") {
         auto values = store.keys();
         return FrameCodec::encode_response_array(values);
     }
     if (cmd == "INFO") {
-        return FrameCodec::encode_response_string(store.info());
+        std::string info = store.info();
+        if (backlog != nullptr) {
+            info += " repl_offset=" + std::to_string(backlog->offset());
+        }
+        return FrameCodec::encode_response_string(info);
+    }
+    if (cmd == "REPLICAOF") {
+        if (argv.size() != 3) {
+            return FrameCodec::encode_response_error("ERR wrong number of arguments for REPLICAOF");
+        }
+        return FrameCodec::encode_response_ok();
     }
     if (cmd == "QUIT") {
         return FrameCodec::encode_response_ok();
@@ -160,7 +193,7 @@ void drain_output(int fd, ConnectionState& state) {
     }
 }
 
-bool handle_client(Store& store, int fd, ConnectionState& state) {
+bool handle_client(Store& store, ReplBacklog* backlog, int fd, ConnectionState& state) {
     std::array<std::uint8_t, 4096> buffer{};
     for (;;) {
         const auto n = recv(fd, buffer.data(), buffer.size(), 0);
@@ -185,7 +218,7 @@ bool handle_client(Store& store, int fd, ConnectionState& state) {
             if (!request.has_value()) {
                 break;
             }
-            const auto response = process_command(store, request->argv);
+            const auto response = process_command(store, backlog, request->argv);
             state.outbuf.insert(state.outbuf.end(), response.begin(), response.end());
             if (offset == state.inbuf.size()) {
                 state.inbuf.clear();
@@ -234,7 +267,7 @@ void accept_loop(int listen_fd, std::vector<WorkerQueue>& queues, std::atomic<st
     }
 }
 
-void worker_loop(Store& store, WorkerQueue& queue) {
+void worker_loop(Store& store, ReplBacklog* backlog, WorkerQueue& queue) {
     for (;;) {
         std::unique_lock<std::mutex> lock(queue.mutex);
         queue.cv.wait(lock, [&queue]() { return !queue.pending.empty(); });
@@ -248,7 +281,7 @@ void worker_loop(Store& store, WorkerQueue& queue) {
             batch.pop_front();
             try {
                 ConnectionState state;
-                if (!handle_client(store, fd, state)) {
+                if (!handle_client(store, backlog, fd, state)) {
                     close(fd);
                 }
             } catch (const std::exception&) {
@@ -264,6 +297,7 @@ Server::Server(ServerConfig config) : config_(std::move(config)) {}
 
 void Server::run() {
     Store store(config_.maxmemory, config_.maxmemory_policy);
+    ReplBacklog backlog;
     const int listen_fd = make_listen_socket(config_.port);
     const std::size_t worker_count = std::max<std::size_t>(1, config_.threads);
 
@@ -271,7 +305,7 @@ void Server::run() {
     std::atomic<std::size_t> next_worker{0};
 
     for (std::size_t i = 0; i < worker_count; ++i) {
-        std::thread(worker_loop, std::ref(store), std::ref(queues[i])).detach();
+        std::thread(worker_loop, std::ref(store), &backlog, std::ref(queues[i])).detach();
     }
 
     accept_loop(listen_fd, queues, next_worker);

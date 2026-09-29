@@ -12,6 +12,7 @@ add_executable(kvserver
     src/server/server.cpp
     src/store/store.cpp
     src/proto/protocol.cpp
+    src/repl/backlog.cpp
 )
 
 target_include_directories(kvserver PRIVATE src)
@@ -26,6 +27,7 @@ target_include_directories(kvcli PRIVATE src)
 add_executable(kvtests
     tests/test_store.cpp
     src/store/store.cpp
+    src/repl/backlog.cpp
 )
 target_include_directories(kvtests PRIVATE src)
 

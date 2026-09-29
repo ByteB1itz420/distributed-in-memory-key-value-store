@@ -14,7 +14,7 @@
 | M2 | epoll event loop | ✅ Done | Edge-triggered, non-blocking, pipelining |
 | M3 | Multithreaded workers | ✅ Done | Acceptor thread hands work to a worker pool; the server remains responsive under mixed requests |
 | M4 | TTL + LRU eviction | ✅ Done | TTL expiry and `allkeys-lru` eviction are implemented under `maxmemory` |
-| M5 | Leader-follower replication | ⬜ Not started | Backlog and stream design are documented; failover path is not implemented yet |
+| M5 | Leader-follower replication | 🔨 In progress | Backlog is now in the server path and records mutating commands for replay; failover path remains to be hardened |
 | M6 | Benchmarks + hardening | ✅ Done (baseline) | Stress harness and benchmark plan are checked in; actual throughput/latency numbers still need to be recorded on a host |
 | M7 | Packaging + docs | ✅ Done | PLAN/STATUS/README plus project scaffold and benchmark/docs folders landed |
 
