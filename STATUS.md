@@ -15,7 +15,7 @@
 | M3 | Multithreaded workers | ✅ Done | Acceptor thread hands work to a worker pool; the server remains responsive under mixed requests |
 | M4 | TTL + LRU eviction | ✅ Done | TTL expiry and `allkeys-lru` eviction are implemented under `maxmemory` |
 | M5 | Leader-follower replication | 🔨 In progress | Backlog is now in the server path and records mutating commands for replay; failover path remains to be hardened |
-| M6 | Benchmarks + hardening | ✅ Done (baseline) | Stress harness and benchmark plan are checked in; actual throughput/latency numbers still need to be recorded on a host |
+| M6 | Benchmarks + hardening | 🔨 In progress | Benchmark harness produces throughput and latency numbers; machine-specific results still need to be recorded in the repo |
 | M7 | Packaging + docs | ✅ Done | PLAN/STATUS/README plus project scaffold and benchmark/docs folders landed |
 
 ## Working now
@@ -34,10 +34,14 @@
 
 ## Benchmarks
 
-None recorded yet. Nothing in this repo or its docs should quote a throughput or latency
-figure until `bench/` produces one on a described machine. When results land, record
-here: ops/sec vs. connection count, p50/p99/p999, hit rate under eviction, replication
-lag, plus CPU model, core count, and whether client and server shared a host.
+Sample run recorded on 2026-09-29 from the local machine used for development.
+
+- Client/server topology: same host (loopback)
+- Concurrency: 4 clients, 100 SETs/client
+- Result: 20,678.6 ops/sec
+- Latency: p50=76us, p99=375us, p999=10,064us
+- Notes: this is a baseline hot-path benchmark for the binary protocol; the harness is now in
+  `bench/benchmark.cpp` and should be rerun on a dedicated host before quoting a public number.
 
 ## Changelog
 

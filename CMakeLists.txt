@@ -37,4 +37,10 @@ add_executable(kvstress
 )
 target_include_directories(kvstress PRIVATE src)
 
+add_executable(kvbench
+    bench/benchmark.cpp
+    src/proto/protocol.cpp
+)
+target_include_directories(kvbench PRIVATE src)
+
 add_test(NAME kvstore_tests COMMAND kvtests)
