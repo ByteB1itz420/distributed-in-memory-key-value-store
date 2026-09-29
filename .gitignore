@@ -1,0 +1,6 @@
+build/
+.venv/
+.vscode/
+*.log
+__pycache__/
+*.swp
