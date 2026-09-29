@@ -11,8 +11,13 @@ node dies.
 **Status:** M7 of 7 — see [STATUS.md](STATUS.md). Design and roadmap in [PLAN.md](PLAN.md).
 The repository includes the packaging, CI, and design-page deliverables for the final milestone.
 
-**Live demo:** [kv-store-console.vercel.app](https://kv-store-console.vercel.app) · Public,
+**Live demo:** [kv-store-console.vercel.app](https://kv-store-console.vercel.app) ·
+[Railway API health](https://kvstore-demo-production.up.railway.app/health) · Public,
 ephemeral demo sessions — do not store secrets.
+
+Each browser session receives an isolated demo namespace and starts with two example keys.
+Use **New demo** to get a fresh namespace. Values live only in process memory, so a Railway
+restart clears them; the public demo is for trying the UI, not production data.
 
 ---
 
