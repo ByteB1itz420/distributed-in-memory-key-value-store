@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { createClient } from "@supabase/supabase-js";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import express from "express";
 import { rateLimit } from "express-rate-limit";
 import helmet from "helmet";
@@ -14,13 +14,10 @@ const allowedOrigins = new Set(
     .map((origin) => origin.trim())
     .filter(Boolean),
 );
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
-const supabase = supabaseUrl && supabaseAnonKey
-  ? createClient(supabaseUrl, supabaseAnonKey, {
-      auth: { autoRefreshToken: false, detectSessionInUrl: false, persistSession: false },
-    })
-  : null;
+const demoSecret = process.env.DEMO_SECRET ?? randomBytes(32).toString("hex");
+if (!process.env.DEMO_SECRET) {
+  console.warn("DEMO_SECRET is unset; demo sessions will be invalidated when this process restarts");
+}
 const app = express();
 
 const kvServer = process.env.START_KV_SERVER === "false"
@@ -30,7 +27,7 @@ const kvServer = process.env.START_KV_SERVER === "false"
 if (kvServer) {
   kvServer.once("error", (error) => {
     console.error("Could not start kvserver:", error.message);
-    process.exitCode = 1;
+    process.exit(1);
   });
   kvServer.once("exit", (code, signal) => {
     if (!shuttingDown) {
@@ -62,7 +59,7 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: "1mb", strict: true }));
-app.use("/api", rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: "draft-8", legacyHeaders: false }));
+app.use("/api", rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: "draft-8", legacyHeaders: false }));
 
 app.get("/health", async (_req, res) => {
   try {
@@ -73,23 +70,47 @@ app.get("/health", async (_req, res) => {
   }
 });
 
+function signDemoSession(id) {
+  return createHmac("sha256", demoSecret).update(id).digest("base64url");
+}
+
+function isValidDemoToken(token) {
+  const match = /^([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/.exec(token);
+  if (!match) return null;
+  const expected = Buffer.from(signDemoSession(match[1]));
+  const supplied = Buffer.from(match[2]);
+  if (expected.length !== supplied.length || !timingSafeEqual(expected, supplied)) return null;
+  return match[1];
+}
+
+const demoSessionLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  limit: 10,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+});
+
+app.post("/api/demo/session", demoSessionLimiter, async (_req, res) => {
+  const id = randomUUID();
+  const prefix = `user:demo-${id}:`;
+  await sendCommand(["SET", `${prefix}welcome`, "Your demo is live. Edit or delete this key to try the store."]);
+  await sendCommand(["SET", `${prefix}sample:json`, "{\"project\":\"kv.store\",\"mode\":\"in-memory\"}"]);
+  res.status(201).json({ accessToken: `${id}.${signDemoSession(id)}` });
+});
+
 app.use("/api", async (req, res, next) => {
-  if (!supabase) {
-    res.status(503).json({ error: "Sign-in is not configured on the server" });
-    return;
-  }
   const authorization = req.get("authorization") ?? "";
   const match = /^Bearer ([^\s]+)$/.exec(authorization);
   if (!match) {
-    res.status(401).json({ error: "A valid Supabase access token is required" });
+    res.status(401).json({ error: "A valid demo session is required" });
     return;
   }
-  const { data, error } = await supabase.auth.getUser(match[1]);
-  if (error || !data.user) {
-    res.status(401).json({ error: "Supabase session is invalid or expired" });
+  const id = isValidDemoToken(match[1]);
+  if (!id) {
+    res.status(401).json({ error: "Demo session is invalid; start a new demo session" });
     return;
   }
-  req.userId = data.user.id;
+  req.userId = `demo-${id}`;
   next();
 });
 
@@ -104,8 +125,8 @@ function validateKey(key) {
 }
 
 function validateValue(value) {
-  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 1_000_000) {
-    const error = new Error("Values must be text no larger than 1 MB");
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 16_384) {
+    const error = new Error("Values must be text no larger than 16 KB");
     error.status = 400;
     throw error;
   }
@@ -138,6 +159,13 @@ app.post("/api/keys", async (req, res) => {
   if (ttlSeconds !== undefined && ttlSeconds !== null &&
       (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 31_536_000)) {
     res.status(400).json({ error: "TTL must be blank or a whole number between 1 and 31,536,000 seconds" });
+    return;
+  }
+  const prefix = `user:${req.userId}:`;
+  const existingKeys = await sendCommand(["KEYS"]);
+  if (!existingKeys.includes(`${prefix}${key}`) &&
+      existingKeys.filter((existingKey) => existingKey.startsWith(prefix)).length >= 50) {
+    res.status(429).json({ error: "This demo session is limited to 50 keys" });
     return;
   }
   const args = ["SET", physicalKey(req.userId, key), value];

@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /workspace
 COPY CMakeLists.txt ./
 COPY src ./src
+COPY bench ./bench
+COPY tests ./tests
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --target kvserver -j2
 

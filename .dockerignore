@@ -2,8 +2,12 @@ build/
 .venv/
 .git/
 .github/
+.vercel/
+.railway/
+.venv/
 .vscode/
 node_modules/
+brag/
 web/
 **/*.swp
 **/*.log

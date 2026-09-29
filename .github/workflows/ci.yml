@@ -35,6 +35,24 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test gateway
+        working-directory: gateway
+        run: |
+          npm ci
+          npm test
+          npm run test:integration
+
+      - name: Build web console
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
       - name: Configure sanitizer build
         if: matrix.build_type == 'Debug'
         run: |

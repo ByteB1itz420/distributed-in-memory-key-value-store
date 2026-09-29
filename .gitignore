@@ -1,6 +1,8 @@
 build/
 .venv/
 .vscode/
+.vercel/
+.railway/
 *.log
 __pycache__/
 *.swp
